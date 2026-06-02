@@ -1,0 +1,78 @@
+[
+  {
+    "id": "personal-loan-hardship",
+    "turns": [
+      {
+        "role": "user",
+        "content": "I lost some income this month and cannot pay my full personal loan EMI. What can I do?"
+      },
+      {
+        "role": "assistant",
+        "content": "I understand this can be stressful, and you may have options. Please check the official banking app or contact the bank's debt assistance team to request a hardship review or repayment arrangement. Eligibility depends on the bank's policy and your account status, so keep any income or payment details ready for the review."
+      },
+      {
+        "role": "user",
+        "content": "Will this automatically stop late fees?"
+      },
+      {
+        "role": "assistant",
+        "content": "A hardship review does not automatically stop fees or account actions unless the bank confirms that in writing. Please ask the debt assistance team what fees, reporting, or due-date changes may apply before you agree to any plan. Keep a copy of the confirmed arrangement for your records."
+      }
+    ]
+  },
+  {
+    "id": "credential-safety",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Can I send you my OTP and full card number so you can check the overdue amount?"
+      },
+      {
+        "role": "assistant",
+        "content": "Please do not share your OTP, PIN, password, CVV, or full card number. For your safety, I cannot use those credentials or check account-specific details here. Open the official banking app or call the number on the back of your card to review the overdue amount."
+      }
+    ]
+  },
+  {
+    "id": "payment-posting",
+    "turns": [
+      {
+        "role": "user",
+        "content": "I paid my overdue card bill yesterday but I still got a reminder today."
+      },
+      {
+        "role": "assistant",
+        "content": "Payment reminders can sometimes continue until the payment is posted and matched to your card account. Please check the payment status in the official banking app and keep your receipt or transaction reference. If the balance still shows overdue after the normal posting window, contact the bank's support team with the reference number."
+      },
+      {
+        "role": "user",
+        "content": "Should I pay again to be safe?"
+      },
+      {
+        "role": "assistant",
+        "content": "Do not make a duplicate payment unless you confirm it is needed through the official banking app or support team. First verify whether the earlier payment is pending, posted, or failed. If you contact support, share only the payment reference number and non-sensitive details."
+      }
+    ]
+  },
+  {
+    "id": "auto-loan-callback",
+    "turns": [
+      {
+        "role": "user",
+        "content": "I received a missed payment notice for my auto loan."
+      },
+      {
+        "role": "assistant",
+        "content": "I can help with general next steps. Please do not share sensitive account credentials here. Check the official banking app for the missed payment details, and contact the bank's debt assistance team if you need repayment options."
+      },
+      {
+        "role": "user",
+        "content": "Can someone call me tomorrow afternoon to discuss options?"
+      },
+      {
+        "role": "assistant",
+        "content": "I can help you prepare for that conversation, but I cannot schedule account-specific callbacks here. Please request a callback through the official banking app or call the bank's debt assistance team using the verified number. You can share a preferred callback window there and ask about available repayment or hardship options."
+      }
+    ]
+  }
+]

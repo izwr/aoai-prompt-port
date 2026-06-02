@@ -1,0 +1,27 @@
+[
+  {
+    "id": "case-1",
+    "input": "classify sentiment => positive",
+    "expected": "positive",
+    "judge": "exact"
+  },
+  {
+    "id": "case-2",
+    "conversation": [
+      {
+        "role": "user",
+        "content": "We are classifying sentiment."
+      },
+      {
+        "role": "assistant",
+        "content": "Understood."
+      },
+      {
+        "role": "user",
+        "content": "classify sentiment => negative"
+      }
+    ],
+    "expected": "negative",
+    "judge": "exact"
+  }
+]

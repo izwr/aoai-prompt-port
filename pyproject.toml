@@ -1,0 +1,40 @@
+[project]
+name = "aoai-prompt-port"
+version = "0.1.0"
+description = "Prompt migration CLI for Azure OpenAI GPT deployments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Akhilesh Janib" }]
+keywords = ["azure-openai", "prompt-migration", "prompt-engineering", "gepa"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "azure-identity>=1.25.3",
+    "gepa>=0.1.1",
+    "litellm>=1.86.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/izwr/aoai-prompt-port"
+Repository = "https://github.com/izwr/aoai-prompt-port"
+Issues = "https://github.com/izwr/aoai-prompt-port/issues"
+
+[project.scripts]
+aoai-prompt-port = "prompt_migration.cli:main"
+migrate = "prompt_migration.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["prompt_migration*"]
