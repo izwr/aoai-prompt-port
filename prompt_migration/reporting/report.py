@@ -34,11 +34,20 @@ def should_ship(
     error_count: int = 0,
     required_margin: float = 0.0,
     prompts_equal: bool = False,
+    naive_guide_adherence: float | None = None,
+    optimized_guide_adherence: float | None = None,
 ) -> bool:
     if error_count:
         return False
     if prompts_equal:
         return optimized_score >= naive_score
+    # Guide-adherence path: ship a restructured prompt that preserves behavior within observed
+    # noise and improves guide adherence, even when it does not strictly beat naive on behavior.
+    if naive_guide_adherence is not None and optimized_guide_adherence is not None:
+        behavior_not_worse = optimized_score >= naive_score - required_margin
+        adherence_improved = optimized_guide_adherence > naive_guide_adherence
+        if behavior_not_worse and adherence_improved:
+            return True
     return optimized_score > naive_score + required_margin
 
 
@@ -51,8 +60,15 @@ def build_report(
     optimized_prompt: str,
     gepa_metadata: dict[str, Any] | None = None,
     ship_margin: float = 0.0,
+    naive_guide_adherence: float | None = None,
+    optimized_guide_adherence: float | None = None,
+    restructured_on_target: EvalSummary | None = None,
+    restructured_prompt: str | None = None,
+    restructured_guide_adherence: float | None = None,
 ) -> dict[str, Any]:
     error_count = source_on_source.error_count + naive_on_target.error_count + optimized_on_target.error_count
+    if restructured_on_target is not None:
+        error_count += restructured_on_target.error_count
     naive_noise = observed_noise(naive_on_target)
     optimized_noise = observed_noise(optimized_on_target)
     required_margin = ship_margin + naive_noise + optimized_noise
@@ -63,6 +79,8 @@ def build_report(
         error_count=error_count,
         required_margin=required_margin,
         prompts_equal=prompts_equal,
+        naive_guide_adherence=naive_guide_adherence,
+        optimized_guide_adherence=optimized_guide_adherence,
     )
     reason = ship_reason(
         ship=ship,
@@ -70,11 +88,15 @@ def build_report(
         prompts_equal=prompts_equal,
         required_margin=required_margin,
     )
-    return {
+    report: dict[str, Any] = {
         "scores": {
             "source_prompt_on_source_model": source_on_source.score,
             "source_prompt_on_target_model_naive_port": naive_on_target.score,
             "optimized_prompt_on_target_model": optimized_on_target.score,
+        },
+        "guide_adherence": {
+            "naive_port": naive_guide_adherence,
+            "optimized": optimized_guide_adherence,
         },
         "decision": "ship" if ship else "do_not_ship",
         "reason": reason,
@@ -100,6 +122,17 @@ def build_report(
         },
         "gepa": gepa_metadata or {},
     }
+
+    if restructured_on_target is not None:
+        report["scores"]["restructured_prompt_on_target_model"] = restructured_on_target.score
+        report["guide_adherence"]["restructured"] = restructured_guide_adherence
+        if restructured_prompt is not None:
+            report["prompts"]["restructured"] = restructured_prompt
+        report["events"]["restructured_on_target"] = [
+            asdict(event) for event in restructured_on_target.events
+        ]
+
+    return report
 
 
 def ship_reason(*, ship: bool, error_count: int, prompts_equal: bool, required_margin: float) -> str:
@@ -128,9 +161,15 @@ def render_report_html(report: dict[str, Any]) -> str:
     naive_prompt = str(prompts.get("naive_port", ""))
     optimized_prompt = str(prompts.get("optimized", ""))
     guide = report.get("gepa", {}).get("prompt_guide", {})
+    adherence = report.get("guide_adherence", {})
     ship_gate = report.get("ship_gate", {})
     events = report.get("events", {})
     optimized_events = events.get("optimized_on_target", [])
+    restructured_score = scores.get("restructured_prompt_on_target_model")
+    summary_class = "grid summary with-restructured" if restructured_score is not None else "grid summary"
+    restructured_panel = (
+        score_panel("Restructured / Target", restructured_score) if restructured_score is not None else ""
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -173,6 +212,7 @@ def render_report_html(report: dict[str, Any]) -> str:
     .subtle {{ color: var(--muted); }}
     .grid {{ display: grid; gap: 16px; }}
     .summary {{ grid-template-columns: 1.2fr repeat(3, 1fr); align-items: stretch; }}
+    .summary.with-restructured {{ grid-template-columns: 1.2fr repeat(4, 1fr); }}
     .panel {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -250,7 +290,7 @@ def render_report_html(report: dict[str, Any]) -> str:
     <div class="subtle">Azure OpenAI prompt migration evaluation</div>
   </header>
   <main class="grid">
-    <section class="grid summary">
+    <section class="{summary_class}">
       <div class="panel decision">
         <h2>Decision</h2>
         <strong>{html.escape(decision.replace("_", " ").title())}</strong>
@@ -259,10 +299,12 @@ def render_report_html(report: dict[str, Any]) -> str:
           <span class="pill">Errors: {int(report.get("error_count", 0))}</span>
           <span class="pill">Guide: {html.escape(str(guide.get("source", "unknown")))}</span>
           <span class="pill">Required margin: {float(ship_gate.get("required_margin") or 0.0):.4f}</span>
+          {guide_adherence_pill(adherence)}
         </div>
       </div>
       {score_panel("Source / Source", scores.get("source_prompt_on_source_model"))}
       {score_panel("Naive / Target", scores.get("source_prompt_on_target_model_naive_port"))}
+      {restructured_panel}
       {score_panel("Optimized / Target", scores.get("optimized_prompt_on_target_model"))}
     </section>
 
@@ -295,6 +337,19 @@ def render_report_html(report: dict[str, Any]) -> str:
 </body>
 </html>
 """
+
+
+def guide_adherence_pill(adherence: dict[str, Any]) -> str:
+    naive = adherence.get("naive_port")
+    optimized = adherence.get("optimized")
+    if naive is None or optimized is None:
+        return ""
+    restructured = adherence.get("restructured")
+    if restructured is not None:
+        path = f"{float(naive):.2f} &rarr; {float(restructured):.2f} &rarr; {float(optimized):.2f}"
+    else:
+        path = f"{float(naive):.2f} &rarr; {float(optimized):.2f}"
+    return f'<span class="pill">Guide adherence: {path}</span>'
 
 
 def score_panel(label: str, value: Any) -> str:

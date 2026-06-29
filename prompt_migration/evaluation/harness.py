@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from prompt_migration.evaluation.metric import SemanticSimilarityJudge, score_output
+from prompt_migration.evaluation.multimodal import message_api_content, message_display_text
 from prompt_migration.evaluation.types import EvalSummary, GoldenCase, RunEvent, ScoreResult
 from prompt_migration.llm.model import ModelRunner
 from prompt_migration.utils.logging import progress
@@ -25,6 +26,7 @@ def evaluate_prompt(
             progress(f"[eval] {progress_label}: repetition {repetition + 1}/{repetitions}")
         start_idx = len(events)
         for case_index, case in enumerate(golden_set, start=1):
+            runner_messages = case_runner_messages(case)
             conversation = case_conversation_dicts(case)
             error: str | None = None
             try:
@@ -33,7 +35,7 @@ def evaluate_prompt(
                         f"[eval] {progress_label}: case {case_index}/{len(golden_set)} "
                         f"id={case.id} model={model}"
                     )
-                output = runner(model, prompt, conversation)
+                output = runner(model, prompt, runner_messages)
                 scored = score_output(case, output, semantic_judge=semantic_judge)
             except Exception as exc:
                 output = ""
@@ -64,4 +66,16 @@ def evaluate_prompt(
 
 
 def case_conversation_dicts(case: GoldenCase) -> list[dict[str, str]]:
-    return [{"role": message.role, "content": message.content} for message in case.conversation]
+    """Text-only conversation dicts for reporting, judging, and reflection."""
+    return [
+        {"role": message.role, "content": message_display_text(message)}
+        for message in case.conversation
+    ]
+
+
+def case_runner_messages(case: GoldenCase) -> list[dict[str, object]]:
+    """Chat-API messages for the model, including image and document content parts."""
+    return [
+        {"role": message.role, "content": message_api_content(message)}
+        for message in case.conversation
+    ]

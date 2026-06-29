@@ -22,6 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-model", required=True, help="Azure GPT deployment, for example azure/gpt-4o.")
     parser.add_argument("--target-model", required=True, help="Azure GPT deployment, for example azure/gpt-5.")
     parser.add_argument("--golden", required=True, help="Path to JSON/JSONL golden set.")
+    parser.add_argument(
+        "--input-format",
+        choices=["chat", "qa", "qa-di"],
+        default="chat",
+        help=(
+            "Golden-set input shape. 'chat' replays conversations/transcripts; "
+            "'qa' sends an image plus question for structured extraction; "
+            "'qa-di' adds Azure Document Intelligence output text alongside the image."
+        ),
+    )
     parser.add_argument("--guide", default="", help="Target prompt guide text or path to a text file.")
     parser.add_argument("--guide-url", help="Explicit prompt guide URL. Defaults to a URL derived from --target-model.")
     parser.add_argument("--no-default-guide", action="store_true", help="Do not fetch the default OpenAI prompt guide.")
@@ -37,6 +47,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default="azure/text-embedding-3-large",
         help="Azure text-embedding deployment for embedding semantic judging.",
+    )
+    parser.add_argument(
+        "--guide-adherence-weight",
+        type=float,
+        default=0.2,
+        help=(
+            "Weight in [0, 1) for an LLM guide-adherence metric blended into GEPA's objective. "
+            "Default 0.2; set 0 to disable. Lets a restructured, guide-following prompt win when "
+            "it preserves behavior. Uses --judge-model and requires Azure calls."
+        ),
+    )
+    parser.add_argument(
+        "--restructure-seed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rewrite the naive port into the target guide's structure with one LLM call and use it "
+            "as GEPA's seed (on by default). GEPA then spends its budget on behavior, not on "
+            "discovering structure. Skipped without a guide, under --echo-runner, or with --no-optimize."
+        ),
     )
     parser.add_argument("--eval-repetitions", type=int, default=3, help="Repeated final eval samples for ship gate.")
     parser.add_argument("--ship-margin", type=float, default=0.0, help="Base score margin optimized must clear beyond observed noise.")
@@ -58,6 +88,7 @@ def config_from_args(args: Namespace) -> MigrationConfig:
         source_model=args.source_model,
         target_model=args.target_model,
         golden_path=args.golden,
+        input_format=args.input_format,
         target_prompt_guide=read_text_arg(args.guide) if args.guide else "",
         target_prompt_guide_url=None if args.guide else args.guide_url,
         use_default_prompt_guide=not args.no_default_guide and not args.guide_url,
@@ -65,6 +96,8 @@ def config_from_args(args: Namespace) -> MigrationConfig:
         judge_model=args.judge_model,
         semantic_judge=args.semantic_judge,
         embedding_model=args.embedding_model,
+        guide_adherence_weight=args.guide_adherence_weight,
+        restructure_seed=args.restructure_seed,
         eval_repetitions=args.eval_repetitions,
         ship_margin=args.ship_margin,
         timeout_seconds=args.timeout_seconds,

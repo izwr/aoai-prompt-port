@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any, Protocol
 
+from prompt_migration.evaluation.multimodal import message_display_text
 from prompt_migration.evaluation.types import GoldenCase, ScoreResult
 
 MIN_LENGTH_RATIO = 0.8
@@ -12,6 +13,10 @@ MAX_LENGTH_RATIO = 1.25
 
 class SemanticSimilarityJudge(Protocol):
     def __call__(self, *, expected: str, actual: str, conversation: list[dict[str, str]]) -> tuple[float, str]: ...
+
+
+class GuideAdherenceJudge(Protocol):
+    def __call__(self, *, prompt: str, guide: str) -> tuple[float, str]: ...
 
 
 def score_output(
@@ -60,7 +65,9 @@ def score_output(
     if case.judge == "semantic_and_length":
         if semantic_judge is None:
             raise RuntimeError("semantic_and_length scoring requires a semantic similarity judge model.")
-        conversation = [{"role": message.role, "content": message.content} for message in case.conversation]
+        conversation = [
+            {"role": message.role, "content": message_display_text(message)} for message in case.conversation
+        ]
         return _score_semantic_and_length(
             expected=str(expected),
             actual=actual,

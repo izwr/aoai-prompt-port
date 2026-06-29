@@ -14,19 +14,33 @@ from prompt_migration.llm.guide import (
     normalize_prompt_guide_model,
     prompt_convention_addendum,
 )
-from prompt_migration.evaluation.harness import evaluate_prompt
+from prompt_migration.evaluation.harness import (
+    case_conversation_dicts,
+    case_runner_messages,
+    evaluate_prompt,
+)
 from prompt_migration.evaluation.golden import load_golden_set, split_train_val
 from prompt_migration.evaluation.metric import score_output
-from prompt_migration.evaluation.types import EvalSummary, GoldenCase, RunEvent
+from prompt_migration.evaluation.multimodal import (
+    message_api_content,
+    message_display_text,
+    message_text,
+    resolve_document_text,
+)
+from prompt_migration.evaluation.types import ConversationMessage, EvalSummary, GoldenCase, RunEvent
 from prompt_migration.core.migrate import (
     MigrationConfig,
+    PromptGuideResult,
     migrate_prompt,
     read_text_arg,
     resolve_reflection_model,
+    resolve_restructure_seed,
     resolve_target_prompt_guide,
     validate_migration_config,
 )
+from prompt_migration.cli import build_parser, config_from_args
 from prompt_migration.llm.gepa_adapter import PromptMigrationAdapter
+from prompt_migration.llm.proposer import build_guided_port
 from prompt_migration.llm.model import (
     AzureEmbeddingSimilarityJudge,
     EchoRunner,
@@ -37,7 +51,7 @@ from prompt_migration.llm.model import (
     validate_azure_deployment_model,
     validate_azure_gpt_model,
 )
-from prompt_migration.reporting.report import build_report
+from prompt_migration.reporting.report import build_report, render_report_html, should_ship
 
 
 class MetricTests(unittest.TestCase):
@@ -608,6 +622,356 @@ class MigrationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "role must be 'user' or 'assistant'"):
                 load_golden_set(golden)
+
+
+class InputFormatTests(unittest.TestCase):
+    PNG_DATA_URL = (
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4"
+        "2mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def test_qa_format_builds_multimodal_runner_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            golden = Path(temp_dir) / "golden.json"
+            golden.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "inv",
+                            "image": self.PNG_DATA_URL,
+                            "question": "Extract the total.",
+                            "expected": {"total": "10.00"},
+                        }
+                    ]
+                )
+            )
+
+            cases = load_golden_set(golden, input_format="qa")
+
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0].judge, "json_exact")
+        self.assertEqual(cases[0].input, "Extract the total.")
+
+        messages = case_runner_messages(cases[0])
+        content = messages[0]["content"]
+        self.assertIsInstance(content, list)
+        types_ = [part["type"] for part in content]
+        self.assertIn("image_url", types_)
+        self.assertEqual(content[-1], {"type": "text", "text": "Extract the total."})
+
+        display = case_conversation_dicts(cases[0])
+        self.assertIn("[image 1]", display[0]["content"])
+        self.assertNotIn("base64", display[0]["content"])
+
+    def test_qa_requires_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            golden = Path(temp_dir) / "golden.json"
+            golden.write_text(json.dumps([{"id": "x", "question": "hi", "expected": {}}]))
+
+            with self.assertRaisesRegex(ValueError, "must include an 'image'"):
+                load_golden_set(golden, input_format="qa")
+
+    def test_qa_di_resolves_document_file_and_requires_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            (base / "di.json").write_text(
+                json.dumps({"analyzeResult": {"content": "Total: 1240.00"}})
+            )
+            golden = base / "golden.json"
+            golden.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "inv",
+                            "image": self.PNG_DATA_URL,
+                            "document_intelligence": "di.json",
+                            "question": "Extract the total.",
+                            "expected": {"total": "1240.00"},
+                        }
+                    ]
+                )
+            )
+
+            cases = load_golden_set(golden, input_format="qa-di")
+
+        message = cases[0].conversation[0]
+        self.assertEqual(message.document, "Total: 1240.00")
+        content = message_api_content(message)
+        self.assertEqual(content[0]["type"], "text")
+        self.assertIn("Document Intelligence extraction:", content[0]["text"])
+        self.assertIn("Total: 1240.00", content[0]["text"])
+
+    def test_qa_di_missing_document_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            golden = Path(temp_dir) / "golden.json"
+            golden.write_text(
+                json.dumps([{"id": "x", "image": self.PNG_DATA_URL, "expected": {}}])
+            )
+
+            with self.assertRaisesRegex(ValueError, "must include 'document_intelligence'"):
+                load_golden_set(golden, input_format="qa-di")
+
+    def test_resolve_document_text_extracts_content(self) -> None:
+        payload = {"analyzeResult": {"content": "Hello world", "pages": []}}
+        self.assertEqual(resolve_document_text(payload), "Hello world")
+        self.assertEqual(resolve_document_text("plain text"), "plain text")
+
+    def test_echo_runner_reads_text_from_multimodal_content(self) -> None:
+        message = ConversationMessage(
+            role="user",
+            content="classify => positive",
+            images=(self.PNG_DATA_URL,),
+        )
+        conversation = case_runner_messages(GoldenCase(id="x", conversation=[message], expected="positive"))
+
+        self.assertEqual(EchoRunner()(model="azure/gpt-5", system_prompt="", conversation=conversation), "positive")
+
+    def test_message_text_handles_string_and_parts(self) -> None:
+        self.assertEqual(message_text("plain"), "plain")
+        self.assertEqual(
+            message_text([{"type": "text", "text": "a"}, {"type": "image_url"}, {"type": "text", "text": "b"}]),
+            "a\nb",
+        )
+
+    def test_plain_message_keeps_string_content(self) -> None:
+        message = ConversationMessage(role="user", content="just text")
+        self.assertEqual(message_api_content(message), "just text")
+        self.assertEqual(message_display_text(message), "just text")
+
+    def test_invalid_input_format_rejected_by_config(self) -> None:
+        config = MigrationConfig(
+            source_prompt="p",
+            source_model="azure/gpt-4o",
+            target_model="azure/gpt-5",
+            golden_path="unused.json",
+            input_format="bogus",
+        )
+
+        with self.assertRaisesRegex(ValueError, "input_format"):
+            validate_migration_config(config)
+
+
+class GuideAdherenceTests(unittest.TestCase):
+    def _case(self) -> GoldenCase:
+        return GoldenCase(
+            id="1",
+            conversation=[ConversationMessage(role="user", content="task => A")],
+            expected="A",
+            judge="exact",
+        )
+
+    def test_adapter_blends_guide_adherence_into_score(self) -> None:
+        # A guide-following prompt that preserves behavior should outscore a non-adherent one
+        # with identical behavior, purely via the blended guide-adherence term.
+        def judge(*, prompt: str, guide: str) -> tuple[float, str]:
+            return (1.0 if "GUIDE-STYLE" in prompt else 0.0, "ok")
+
+        adapter = PromptMigrationAdapter(
+            target_model="azure/gpt-5",
+            runner=EchoRunner(),
+            guide_text="the guide",
+            guide_adherence_judge=judge,
+            guide_weight=0.1,
+        )
+        batch = [self._case()]
+
+        plain = adapter.evaluate(batch, {"system_prompt": "return A"}, capture_traces=True)
+        guided = adapter.evaluate(batch, {"system_prompt": "GUIDE-STYLE return A"}, capture_traces=True)
+
+        # Behavior ties at 1.0 (echo runner returns "A"); guided wins on the blended objective.
+        self.assertAlmostEqual(plain.scores[0], 0.9)
+        self.assertAlmostEqual(guided.scores[0], 1.0)
+        self.assertEqual(guided.objective_scores[0]["guide_adherence"], 1.0)
+        # Trajectory score stays behavior-only so reflective filtering is unaffected.
+        self.assertEqual(guided.trajectories[0]["score"], 1.0)
+        self.assertIn("Guide adherence", guided.trajectories[0]["feedback"])
+
+    def test_adapter_caches_adherence_per_prompt(self) -> None:
+        judge = MagicMock(return_value=(0.5, "ok"))
+        adapter = PromptMigrationAdapter(
+            target_model="azure/gpt-5",
+            runner=EchoRunner(),
+            guide_text="the guide",
+            guide_adherence_judge=judge,
+            guide_weight=0.1,
+        )
+        candidate = {"system_prompt": "p"}
+        adapter.evaluate([self._case()], candidate)
+        adapter.evaluate([self._case()], candidate)
+        self.assertEqual(judge.call_count, 1)
+
+    def test_adapter_ignores_adherence_when_weight_zero(self) -> None:
+        judge = MagicMock(return_value=(1.0, "ok"))
+        adapter = PromptMigrationAdapter(
+            target_model="azure/gpt-5",
+            runner=EchoRunner(),
+            guide_text="the guide",
+            guide_adherence_judge=judge,
+            guide_weight=0.0,
+        )
+        result = adapter.evaluate([self._case()], {"system_prompt": "p"})
+        self.assertEqual(result.scores[0], 1.0)
+        judge.assert_not_called()
+
+    def test_ship_gate_ships_on_adherence_when_behavior_preserved(self) -> None:
+        # Optimized ties naive on behavior (within noise) but improves guide adherence.
+        self.assertTrue(
+            should_ship(
+                naive_score=0.80,
+                optimized_score=0.80,
+                required_margin=0.02,
+                naive_guide_adherence=0.4,
+                optimized_guide_adherence=0.9,
+            )
+        )
+
+    def test_ship_gate_blocks_adherence_win_when_behavior_regresses(self) -> None:
+        self.assertFalse(
+            should_ship(
+                naive_score=0.80,
+                optimized_score=0.60,
+                required_margin=0.02,
+                naive_guide_adherence=0.4,
+                optimized_guide_adherence=0.9,
+            )
+        )
+
+    def test_guide_adherence_weight_validation(self) -> None:
+        config = MigrationConfig(
+            source_prompt="p",
+            source_model="azure/gpt-4o",
+            target_model="azure/gpt-5",
+            golden_path="unused.json",
+            guide_adherence_weight=1.0,
+        )
+        with self.assertRaisesRegex(ValueError, "guide_adherence_weight"):
+            validate_migration_config(config)
+
+
+class RestructureSeedTests(unittest.TestCase):
+    LONG = "You are a helpful assistant. " * 5
+
+    def _config(self, **overrides) -> MigrationConfig:
+        base = dict(
+            source_prompt="p",
+            source_model="azure/gpt-4o",
+            target_model="azure/gpt-5",
+            golden_path="unused.json",
+        )
+        base.update(overrides)
+        return MigrationConfig(**base)
+
+    def test_build_guided_port_no_guide_is_noop(self) -> None:
+        lm = MagicMock()
+        result = build_guided_port(naive_prompt="keep me", target_prompt_guide="  ", lm=lm)
+        self.assertEqual(result, "keep me")
+        lm.assert_not_called()
+
+    def test_build_guided_port_extracts_fenced_block(self) -> None:
+        rewritten = "<task>\n" + ("You are a helpful assistant. " * 5) + "\n</task>"
+        lm = MagicMock(return_value=f"Here you go:\n```\n{rewritten}\n```\nDone.")
+        result = build_guided_port(
+            naive_prompt=self.LONG, target_prompt_guide="use XML tags", lm=lm
+        )
+        self.assertEqual(result, rewritten)
+
+    def test_build_guided_port_falls_back_on_empty(self) -> None:
+        lm = MagicMock(return_value="   ")
+        result = build_guided_port(naive_prompt=self.LONG, target_prompt_guide="g", lm=lm)
+        self.assertEqual(result, self.LONG)
+
+    def test_build_guided_port_falls_back_on_truncation(self) -> None:
+        lm = MagicMock(return_value="```\nhi\n```")
+        result = build_guided_port(naive_prompt=self.LONG, target_prompt_guide="g", lm=lm)
+        self.assertEqual(result, self.LONG)
+
+    def test_resolve_restructure_seed_skips_for_echo_runner(self) -> None:
+        guide = PromptGuideResult(text="a guide", source="inline")
+        with patch("prompt_migration.core.migrate.build_guided_port") as port:
+            seed = resolve_restructure_seed(self._config(), "naive", guide, runner=EchoRunner())
+        self.assertEqual(seed, "naive")
+        port.assert_not_called()
+
+    def test_resolve_restructure_seed_skips_without_guide(self) -> None:
+        guide = PromptGuideResult(text="", source="disabled")
+        with patch("prompt_migration.core.migrate.build_guided_port") as port:
+            seed = resolve_restructure_seed(self._config(), "naive", guide, runner=None)
+        self.assertEqual(seed, "naive")
+        port.assert_not_called()
+
+    def test_resolve_restructure_seed_skips_when_disabled(self) -> None:
+        guide = PromptGuideResult(text="a guide", source="inline")
+        with patch("prompt_migration.core.migrate.build_guided_port") as port:
+            seed = resolve_restructure_seed(
+                self._config(restructure_seed=False), "naive", guide, runner=None
+            )
+        self.assertEqual(seed, "naive")
+        port.assert_not_called()
+
+    def test_resolve_restructure_seed_calls_port_when_online(self) -> None:
+        guide = PromptGuideResult(text="a guide", source="inline")
+        with patch(
+            "prompt_migration.core.migrate.build_guided_port", return_value="restructured"
+        ) as port:
+            seed = resolve_restructure_seed(self._config(), "naive", guide, runner=None)
+        self.assertEqual(seed, "restructured")
+        port.assert_called_once()
+
+    def test_cli_restructure_seed_default_and_toggle(self) -> None:
+        parser = build_parser()
+        base = ["--source-prompt", "p", "--source-model", "azure/gpt-4o",
+                "--target-model", "azure/gpt-5", "--golden", "g.json"]
+        self.assertTrue(config_from_args(parser.parse_args(base)).restructure_seed)
+        off = config_from_args(parser.parse_args(base + ["--no-restructure-seed"]))
+        self.assertFalse(off.restructure_seed)
+
+
+class RestructuredReportTests(unittest.TestCase):
+    def _summary(self, name: str, score: float) -> EvalSummary:
+        event = RunEvent(
+            case_id="c", model="azure/gpt", prompt_name=name, input="", conversation=[],
+            expected="", output="", score=score, feedback="",
+        )
+        return EvalSummary(name, "azure/gpt", score, [event], run_scores=[score])
+
+    def test_report_includes_restructured_row(self) -> None:
+        report = build_report(
+            source_on_source=self._summary("source", 1.0),
+            naive_on_target=self._summary("naive", 0.5),
+            optimized_on_target=self._summary("optimized", 0.5),
+            naive_prompt="old",
+            optimized_prompt="new",
+            restructured_on_target=self._summary("restructured", 0.5),
+            restructured_prompt="restructured",
+            naive_guide_adherence=0.3,
+            restructured_guide_adherence=0.9,
+            optimized_guide_adherence=0.9,
+        )
+        self.assertEqual(report["scores"]["restructured_prompt_on_target_model"], 0.5)
+        self.assertEqual(report["prompts"]["restructured"], "restructured")
+        self.assertEqual(report["guide_adherence"]["restructured"], 0.9)
+        self.assertIn("restructured_on_target", report["events"])
+        # Behavior parity within noise + adherence gain over naive → ship.
+        self.assertEqual(report["decision"], "ship")
+        html_out = render_report_html(report)
+        self.assertIn("Restructured / Target", html_out)
+        self.assertIn('class="grid summary with-restructured"', html_out)
+
+    def test_report_omits_restructured_when_absent(self) -> None:
+        report = build_report(
+            source_on_source=self._summary("source", 1.0),
+            naive_on_target=self._summary("naive", 0.5),
+            optimized_on_target=self._summary("optimized", 0.9),
+            naive_prompt="old",
+            optimized_prompt="new",
+        )
+        self.assertNotIn("restructured_prompt_on_target_model", report["scores"])
+        self.assertNotIn("restructured", report["prompts"])
+        self.assertNotIn("restructured_on_target", report["events"])
+        html_out = render_report_html(report)
+        self.assertNotIn("Restructured / Target", html_out)
+        self.assertIn('class="grid summary"', html_out)
+        self.assertNotIn('class="grid summary with-restructured"', html_out)
 
 
 if __name__ == "__main__":
