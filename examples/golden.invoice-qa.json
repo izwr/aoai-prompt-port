@@ -1,0 +1,13 @@
+[
+  {
+    "id": "invoice-total",
+    "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "question": "Extract the invoice number, invoice date (YYYY-MM-DD), and total amount. Return JSON with keys invoice_number, invoice_date, total.",
+    "expected": {
+      "invoice_number": "INV-1001",
+      "invoice_date": "2026-01-14",
+      "total": "1240.00"
+    },
+    "judge": "json_exact"
+  }
+]

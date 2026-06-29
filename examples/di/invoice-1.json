@@ -1,0 +1,15 @@
+{
+  "analyzeResult": {
+    "apiVersion": "2024-11-30",
+    "modelId": "prebuilt-invoice",
+    "content": "Contoso Ltd.\nInvoice\nInvoice Number: INV-1001\nInvoice Date: 2026-01-14\nBill To: Fabrikam Inc.\n\nDescription            Qty    Unit Price    Amount\nConsulting services      8        140.00    1120.00\nSupport plan             1        120.00     120.00\n\nSubtotal: 1240.00\nTax: 0.00\nTotal: 1240.00\n",
+    "pages": [
+      {
+        "pageNumber": 1,
+        "width": 8.5,
+        "height": 11,
+        "unit": "inch"
+      }
+    ]
+  }
+}

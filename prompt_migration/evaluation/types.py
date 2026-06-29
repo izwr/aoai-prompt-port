@@ -11,6 +11,8 @@ JudgeKind = Literal["exact", "contains", "json_exact", "semantic_and_length"]
 class ConversationMessage:
     role: str
     content: str
+    images: tuple[str, ...] = field(default_factory=tuple)
+    document: str | None = None
 
 
 @dataclass(frozen=True)

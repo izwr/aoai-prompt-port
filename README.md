@@ -139,6 +139,27 @@ Embeddings are faster and cheaper, but they compare response text directly and a
 
 Final ship/no-ship uses repeated evaluation (`--eval-repetitions`, default `3`) and requires a changed optimized prompt to beat the naive target-model prompt by `--ship-margin` plus observed run-to-run noise. Unsupported model parameters are dropped via LiteLLM's `drop_params=True` safety net.
 
+### Guide adherence metric
+
+GEPA's behavior metric measures only similarity to the golden set, which has no notion of whether the prompt follows the target-model prompt guide. A restructured, guide-following prompt that merely *preserves* behavior is a tie on that objective, so GEPA would keep the original. `--guide-adherence-weight` (a value in `[0, 1)`, default `0.2`) blends an LLM guide-adherence score into the objective; set it to `0` to disable:
+
+```bash
+uv run aoai-prompt-port \
+  --source-prompt ./examples/prompt.gpt-4o-mini.txt \
+  --source-model azure/gpt-4o-mini \
+  --target-model azure/gpt-5.4-mini \
+  --golden ./examples/golden.bfsi-debt-support.json \
+  --guide-adherence-weight 0.2
+```
+
+The objective becomes `(1 - weight) * behavior + weight * guide_adherence`, so behavior stays dominant (GEPA will not trade meaningful behavior for structure) but a guide-following rewrite wins when behavior is preserved. An LLM judge (`--judge-model`, `temperature=0`) scores how well the *prompt* follows the guide's structural conventions; it does not judge task content. When the weight is active, the ship gate also ships a restructured prompt that holds behavior within observed noise and improves guide adherence, and the report records naive→optimized adherence. The metric is on by default at `0.2`; pass `--guide-adherence-weight 0` to disable it and make no extra model calls. Because it requires Azure calls, it is automatically skipped under `--echo-runner`.
+
+### Restructure-then-optimize
+
+Rather than asking GEPA to *discover* the guide-conformant structure and preserve behavior at the same time (which burns its limited `--max-metric-calls` budget on a large monolithic prompt and often returns the original unchanged), the migration first rewrites the naive port into the target guide's structure with a single LLM call, then seeds GEPA with that restructured prompt. GEPA then spends its whole budget on behavior preservation/tuning, and the guide-adherence metric acts as a *guard* against structural drift rather than the driver.
+
+This runs by default whenever a guide is available and you are optimizing. The restructure uses the reflection model (`--reflection-model`, defaulting to `--target-model`). The report shows three target-model rows — naive → restructured → optimized — with their guide-adherence scores, so you can see where structure and behavior each moved. If the rewrite comes back empty or implausibly short, it falls back to the naive port. Disable it with `--no-restructure-seed`. It is skipped under `--echo-runner` and with `--no-optimize`.
+
 For local harness testing without model calls:
 
 ```bash
@@ -196,6 +217,59 @@ Cases can also provide a multi-turn `conversation` or `messages` array:
 ```
 
 Supported judges: `semantic_and_length`, `exact`, `contains`, and `json_exact`.
+
+## Input formats
+
+`--input-format` controls how each golden record is turned into a model request.
+It defaults to `chat`, so existing golden sets are unaffected.
+
+- `chat` (default): replays conversations and original-bot transcripts, as
+  described above.
+- `qa`: structured data extraction from an **image** plus a **question**. The
+  prompt being migrated is the extraction instruction (the system prompt); the
+  image and question are sent as the user turn.
+- `qa-di`: the same as `qa`, but also injects **Azure Document Intelligence**
+  output text alongside the image, so the model can read both the layout image
+  and the OCR/structure extraction.
+
+QA records use these fields:
+
+| Field | `qa` | `qa-di` | Notes |
+| --- | --- | --- | --- |
+| `image` | required | optional | File path, `http(s)` URL, or `data:` URL. A list of images is allowed. File paths resolve relative to the golden file. |
+| `document_intelligence` | optional | required | Path to a Document Intelligence JSON/text file, an inline string, or an inline object. JSON is reduced to its extracted `content` text. Aliases: `document`, `di`. |
+| `question` | optional | optional | The instruction/question for the user turn. Aliases: `input`, `prompt`. |
+| `expected` / `answer` | required | required | The gold extraction. |
+| `judge` | optional | optional | Defaults to `json_exact` for structured extraction. |
+
+```bash
+uv run aoai-prompt-port \
+  --source-prompt ./examples/prompt.extraction.txt \
+  --source-model azure/gpt-4o \
+  --target-model azure/gpt-5.4 \
+  --golden ./examples/golden.invoice-qa-di.json \
+  --input-format qa-di \
+  --output-dir migration_out
+```
+
+Example QA golden record (`qa-di`):
+
+```json
+{
+  "id": "invoice-total",
+  "image": "invoices/invoice-1.png",
+  "document_intelligence": "di/invoice-1.json",
+  "question": "Extract invoice_number, invoice_date (YYYY-MM-DD), and total. Return JSON.",
+  "expected": { "invoice_number": "INV-1001", "invoice_date": "2026-01-14", "total": "1240.00" },
+  "judge": "json_exact"
+}
+```
+
+Images are inlined to the model as base64 `data:` URLs, but reports and the GEPA
+reflection dataset show a compact `[image N]` placeholder plus the Document
+Intelligence text, so report files stay readable. QA migrations need real Azure
+model calls (`--echo-runner` cannot extract data); see `examples/golden.invoice-qa.json`
+and `examples/golden.invoice-qa-di.json` for self-contained samples.
 
 For support-bot migrations, use original bot turns or complete assistant responses, not intent labels. The example BFSI debt-management set is a set of original-bot transcripts so migration is evaluated on tone, safety, and next-step quality.
 

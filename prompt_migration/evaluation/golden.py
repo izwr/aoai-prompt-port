@@ -5,10 +5,17 @@ import random
 from pathlib import Path
 from typing import Any
 
+from prompt_migration.evaluation.multimodal import resolve_document_text, resolve_image_data_url
 from prompt_migration.evaluation.types import ConversationMessage, GoldenCase
 
+SUPPORTED_JUDGES = {"exact", "contains", "json_exact", "semantic_and_length"}
+INPUT_FORMATS = {"chat", "qa", "qa-di"}
 
-def load_golden_set(path: str | Path) -> list[GoldenCase]:
+
+def load_golden_set(path: str | Path, input_format: str = "chat") -> list[GoldenCase]:
+    if input_format not in INPUT_FORMATS:
+        raise ValueError(f"input_format must be one of {sorted(INPUT_FORMATS)}; got {input_format!r}.")
+
     source = Path(path)
     if not source.exists():
         raise FileNotFoundError(f"Golden set not found: {source}")
@@ -27,20 +34,87 @@ def load_golden_set(path: str | Path) -> list[GoldenCase]:
 
     cases: list[GoldenCase] = []
     for idx, record in enumerate(records):
-        cases.extend(_parse_record(idx, record))
+        cases.extend(_parse_record(idx, record, input_format, base_dir=source.parent))
     if not cases:
         raise ValueError("Golden set must contain at least one case.")
     return cases
 
 
-def _parse_record(idx: int, record: Any) -> list[GoldenCase]:
+def _parse_record(idx: int, record: Any, input_format: str, *, base_dir: Path) -> list[GoldenCase]:
     if not isinstance(record, dict):
         raise ValueError(f"Golden case at index {idx} must be an object.")
+
+    if input_format in {"qa", "qa-di"}:
+        return [_parse_qa_case(idx, record, input_format, base_dir=base_dir)]
 
     if "expected" not in record and "answer" not in record:
         return _expand_transcript(idx, record)
 
     return [_parse_case(idx, record)]
+
+
+def _parse_qa_case(idx: int, record: dict[str, Any], input_format: str, *, base_dir: Path) -> GoldenCase:
+    case_id = str(record.get("id", idx))
+
+    question = record.get("question", record.get("input", record.get("prompt")))
+    if question is not None and not isinstance(question, str):
+        raise ValueError(f"Golden case {case_id} 'question' must be a string.")
+
+    images = _resolve_qa_images(case_id, record, base_dir=base_dir)
+
+    document: str | None = None
+    di_source = record.get("document_intelligence", record.get("document", record.get("di")))
+    if input_format == "qa-di" and di_source is None:
+        raise ValueError(f"Golden case {case_id} (qa-di) must include 'document_intelligence'.")
+    if di_source is not None:
+        document = resolve_document_text(di_source, base_dir=base_dir)
+
+    if input_format == "qa" and not images:
+        raise ValueError(f"Golden case {case_id} (qa) must include an 'image'.")
+    if not images and not document and not question:
+        raise ValueError(f"Golden case {case_id} must include an image, document, or question.")
+
+    if "expected" in record:
+        expected = record["expected"]
+    elif "answer" in record:
+        expected = record["answer"]
+    else:
+        raise ValueError(f"Golden case {case_id} must include 'expected' or 'answer'.")
+
+    judge = record.get("judge", "json_exact")
+    if judge not in SUPPORTED_JUDGES:
+        raise ValueError(f"Golden case {case_id} has unsupported judge '{judge}'.")
+
+    metadata = record.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Golden case {case_id} metadata must be an object.")
+
+    message = ConversationMessage(
+        role="user",
+        content=question or "",
+        images=tuple(images),
+        document=document,
+    )
+    return GoldenCase(id=case_id, conversation=[message], expected=expected, judge=judge, metadata=metadata)
+
+
+def _resolve_qa_images(case_id: str, record: dict[str, Any], *, base_dir: Path) -> list[str]:
+    raw = record.get("image", record.get("images"))
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw_list = [raw]
+    elif isinstance(raw, list):
+        raw_list = raw
+    else:
+        raise ValueError(f"Golden case {case_id} 'image' must be a string or list of strings.")
+
+    resolved: list[str] = []
+    for item in raw_list:
+        if not isinstance(item, str):
+            raise ValueError(f"Golden case {case_id} 'image' entries must be strings.")
+        resolved.append(resolve_image_data_url(item, base_dir=base_dir))
+    return resolved
 
 
 def _parse_case(idx: int, record: dict[str, Any]) -> GoldenCase:

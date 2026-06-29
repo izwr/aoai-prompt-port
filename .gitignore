@@ -11,3 +11,6 @@ wheels/
 
 # Generated migration outputs
 migration_out/
+
+# macOS
+.DS_Store
