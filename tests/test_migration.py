@@ -32,13 +32,14 @@ from prompt_migration.core.migrate import (
     MigrationConfig,
     PromptGuideResult,
     migrate_prompt,
+    optimize_prompt,
     read_text_arg,
     resolve_reflection_model,
     resolve_restructure_seed,
     resolve_target_prompt_guide,
     validate_migration_config,
 )
-from prompt_migration.cli import build_parser, config_from_args
+from prompt_migration.cli import build_parser, config_from_args, resolve_max_metric_calls
 from prompt_migration.llm.gepa_adapter import PromptMigrationAdapter
 from prompt_migration.llm.proposer import build_guided_port
 from prompt_migration.llm.model import (
@@ -972,6 +973,83 @@ class RestructuredReportTests(unittest.TestCase):
         self.assertNotIn("Restructured / Target", html_out)
         self.assertIn('class="grid summary"', html_out)
         self.assertNotIn('class="grid summary with-restructured"', html_out)
+
+
+class StepsBudgetTests(unittest.TestCase):
+    def _args(self, *extra):
+        base = ["--source-prompt", "p", "--source-model", "azure/gpt-4o",
+                "--target-model", "azure/gpt-5", "--golden", "g.json"]
+        return build_parser().parse_args(base + list(extra))
+
+    def test_default_uses_metric_calls_ceiling(self) -> None:
+        cfg = config_from_args(self._args())
+        self.assertIsNone(cfg.steps)
+        self.assertEqual(cfg.max_metric_calls, 60)
+
+    def test_steps_drops_default_ceiling(self) -> None:
+        cfg = config_from_args(self._args("--steps", "50"))
+        self.assertEqual(cfg.steps, 50)
+        self.assertIsNone(cfg.max_metric_calls)
+
+    def test_steps_with_explicit_ceiling_keeps_both(self) -> None:
+        cfg = config_from_args(self._args("--steps", "50", "--max-metric-calls", "300"))
+        self.assertEqual(cfg.steps, 50)
+        self.assertEqual(cfg.max_metric_calls, 300)
+
+    def test_resolve_max_metric_calls(self) -> None:
+        self.assertEqual(resolve_max_metric_calls(self._args()), 60)
+        self.assertIsNone(resolve_max_metric_calls(self._args("--steps", "10")))
+        self.assertEqual(resolve_max_metric_calls(self._args("--max-metric-calls", "120")), 120)
+
+    def test_validation_rejects_no_stop_condition(self) -> None:
+        config = MigrationConfig(
+            source_prompt="p", source_model="azure/gpt-4o", target_model="azure/gpt-5",
+            golden_path="g.json", max_metric_calls=None, steps=None, optimize=True,
+        )
+        with self.assertRaisesRegex(ValueError, "steps or max_metric_calls"):
+            validate_migration_config(config)
+
+    def test_validation_rejects_zero_steps(self) -> None:
+        config = MigrationConfig(
+            source_prompt="p", source_model="azure/gpt-4o", target_model="azure/gpt-5",
+            golden_path="g.json", steps=0,
+        )
+        with self.assertRaisesRegex(ValueError, "steps must be at least 1"):
+            validate_migration_config(config)
+
+    def test_optimize_passes_step_stopper_to_gepa(self) -> None:
+        from gepa.utils.stop_condition import MaxCandidateProposalsStopper
+
+        cases = [
+            GoldenCase(id="1", conversation=[ConversationMessage(role="user", content="a => A")],
+                       expected="A", judge="exact"),
+            GoldenCase(id="2", conversation=[ConversationMessage(role="user", content="b => B")],
+                       expected="B", judge="exact"),
+        ]
+        config = MigrationConfig(
+            source_prompt="p", source_model="azure/gpt-4o", target_model="azure/gpt-5",
+            golden_path="g.json", steps=7, max_metric_calls=None,
+        )
+        fake_result = MagicMock(
+            best_candidate={"system_prompt": "optimized"}, best_idx=0, num_candidates=1,
+            val_aggregate_scores=[1.0], total_metric_calls=5,
+        )
+        with patch("prompt_migration.core.migrate.gepa.optimize", return_value=fake_result) as opt, \
+             patch("prompt_migration.core.migrate.make_prompt_proposer", return_value=None), \
+             patch("prompt_migration.core.migrate.ReflectionLM"):
+            optimize_prompt(
+                config=config,
+                seed_prompt="seed",
+                golden_set=cases,
+                runner=EchoRunner(),
+                semantic_judge=None,
+                guide=PromptGuideResult(text="", source="disabled"),
+            )
+
+        stopper = opt.call_args.kwargs["stop_callbacks"]
+        self.assertIsInstance(stopper, MaxCandidateProposalsStopper)
+        self.assertEqual(stopper.max_proposals, 7)
+        self.assertIsNone(opt.call_args.kwargs["max_metric_calls"])
 
 
 if __name__ == "__main__":

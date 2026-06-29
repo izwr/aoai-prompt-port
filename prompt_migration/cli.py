@@ -71,7 +71,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-repetitions", type=int, default=3, help="Repeated final eval samples for ship gate.")
     parser.add_argument("--ship-margin", type=float, default=0.0, help="Base score margin optimized must clear beyond observed noise.")
     parser.add_argument("--timeout-seconds", type=int, default=30, help="Per Azure model-call timeout.")
-    parser.add_argument("--max-metric-calls", type=int, default=60)
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help=(
+            "Number of GEPA optimization steps (reflective proposals). Recommended knob: each step "
+            "is one reflect-and-propose round, independent of golden-set size. When set, "
+            "--max-metric-calls becomes an optional safety ceiling."
+        ),
+    )
+    parser.add_argument(
+        "--max-metric-calls",
+        type=int,
+        default=None,
+        help=(
+            "Hard ceiling on total GEPA metric calls (case rollouts). Defaults to 60 when --steps "
+            "is not set; when --steps is set, acts only as an optional safety ceiling (no limit if omitted)."
+        ),
+    )
     parser.add_argument("--val-fraction", type=float, default=0.4)
     parser.add_argument("--run-dir")
     parser.add_argument("--output-dir", default="migration_out")
@@ -80,6 +98,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-optimize", action="store_true", help="Only run source/source and naive target baselines.")
     parser.add_argument("--echo-runner", action="store_true", help="Use deterministic local runner for harness tests.")
     return parser
+
+
+def resolve_max_metric_calls(args: Namespace) -> int | None:
+    """Resolve the GEPA metric-call ceiling.
+
+    Explicit ``--max-metric-calls`` always wins. Otherwise default to 60 unless ``--steps``
+    is given, in which case the step count is the binding stop condition and there is no
+    metric-call ceiling.
+    """
+    if args.max_metric_calls is not None:
+        return args.max_metric_calls
+    return None if args.steps is not None else 60
 
 
 def config_from_args(args: Namespace) -> MigrationConfig:
@@ -101,7 +131,8 @@ def config_from_args(args: Namespace) -> MigrationConfig:
         eval_repetitions=args.eval_repetitions,
         ship_margin=args.ship_margin,
         timeout_seconds=args.timeout_seconds,
-        max_metric_calls=args.max_metric_calls,
+        max_metric_calls=resolve_max_metric_calls(args),
+        steps=args.steps,
         val_fraction=args.val_fraction,
         run_dir=args.run_dir,
         optimize=not args.no_optimize,

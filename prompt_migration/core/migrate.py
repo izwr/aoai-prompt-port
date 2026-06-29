@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import gepa
+from gepa.utils.stop_condition import MaxCandidateProposalsStopper
 
 from prompt_migration.core.baselines import run_baselines
 from prompt_migration.evaluation.golden import load_golden_set, split_train_val
@@ -50,7 +51,8 @@ class MigrationConfig:
     eval_repetitions: int = 3
     ship_margin: float = 0.0
     timeout_seconds: int = 30
-    max_metric_calls: int = 60
+    max_metric_calls: int | None = 60
+    steps: int | None = None
     val_fraction: float = 0.4
     run_dir: str | None = None
     optimize: bool = True
@@ -191,6 +193,7 @@ def optimize_prompt(
         guide_weight=config.guide_adherence_weight,
     )
     proposer = make_prompt_proposer(config, guide)
+    stop_callbacks = MaxCandidateProposalsStopper(config.steps) if config.steps is not None else None
 
     progress("[migration] Starting GEPA optimization")
     result = gepa.optimize(
@@ -201,6 +204,7 @@ def optimize_prompt(
         reflection_lm=None if proposer else ReflectionLM(resolve_reflection_model(config)),
         custom_candidate_proposer=proposer,
         max_metric_calls=config.max_metric_calls,
+        stop_callbacks=stop_callbacks,
         run_dir=config.run_dir,
         module_selector="round_robin",
         raise_on_exception=False,
@@ -314,8 +318,12 @@ def validate_migration_config(config: MigrationConfig) -> None:
         raise ValueError("eval_repetitions must be at least 1.")
     if config.timeout_seconds < 1:
         raise ValueError("timeout_seconds must be at least 1.")
-    if config.max_metric_calls < 1:
+    if config.max_metric_calls is not None and config.max_metric_calls < 1:
         raise ValueError("max_metric_calls must be at least 1.")
+    if config.steps is not None and config.steps < 1:
+        raise ValueError("steps must be at least 1.")
+    if config.optimize and config.steps is None and config.max_metric_calls is None:
+        raise ValueError("Set steps or max_metric_calls to bound GEPA optimization.")
     if not 0.0 < config.val_fraction < 1.0:
         raise ValueError("val_fraction must be between 0 and 1.")
     if config.ship_margin < 0.0:

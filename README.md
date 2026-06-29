@@ -139,6 +139,15 @@ Embeddings are faster and cheaper, but they compare response text directly and a
 
 Final ship/no-ship uses repeated evaluation (`--eval-repetitions`, default `3`) and requires a changed optimized prompt to beat the naive target-model prompt by `--ship-margin` plus observed run-to-run noise. Unsupported model parameters are dropped via LiteLLM's `drop_params=True` safety net.
 
+### Optimization budget: `--steps` vs `--max-metric-calls`
+
+GEPA's optimization budget can be bounded two ways:
+
+- `--steps N` (recommended): run exactly `N` reflective proposal steps. A step is one reflect-and-propose round, independent of golden-set size, so it is the intuitive knob — `--steps 50` means 50 attempts to improve the prompt regardless of how many cases or how big the validation split is.
+- `--max-metric-calls N`: cap total case rollouts. This is harder to reason about because the cost per step depends on the validation-set size and minibatch size, so the number of steps you get varies with the golden set.
+
+When `--steps` is set it is the binding stop condition (implemented with GEPA's `MaxCandidateProposalsStopper`), and `--max-metric-calls` becomes an optional safety ceiling — omit it for no rollout cap, or pass it to also stop early if cost runs high. When `--steps` is omitted, `--max-metric-calls` defaults to `60`. For a large prompt, `--steps 50` (or more) gives GEPA enough rounds to converge.
+
 ### Guide adherence metric
 
 GEPA's behavior metric measures only similarity to the golden set, which has no notion of whether the prompt follows the target-model prompt guide. A restructured, guide-following prompt that merely *preserves* behavior is a tie on that objective, so GEPA would keep the original. `--guide-adherence-weight` (a value in `[0, 1)`, default `0.2`) blends an LLM guide-adherence score into the objective; set it to `0` to disable:
